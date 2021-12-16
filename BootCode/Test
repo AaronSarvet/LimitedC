@@ -10,7 +10,7 @@ library(c(
   'haven',
   'Hmisc',
   'biglmm'
-))
+), character.only = TRUE)
 
 
 load("candidates_analysis.RData")
