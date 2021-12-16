@@ -1,0 +1,631 @@
+requiredPackages = c(
+  'plyr',
+  'tidyverse',
+  'data.table',
+  'pbapply',
+  'ggthemes',
+  'splines',
+  'parallel',
+  'haven',
+  'Hmisc',
+  'biglmm',
+  'showtext'
+)
+for (p in requiredPackages) {
+  if (!require(p, character.only = TRUE))
+    install.packages(p)
+  library(p, character.only = TRUE)
+}
+
+load("candidates_analysis.RData")
+
+bootstart = 26
+bootend   = 50
+
+
+
+estimate <- function(data, baseline_covariates,
+                     time_varying_covariates_transplant, time_varying_covariates_censoring, 
+                     increased_risk_usage_factor, standard_risk_usage_factor, timescale, 
+                     use_existing_models=F, existing_model=NULL, K=136,
+                     boot=F, seed=NULL, regime=NULL){
+  
+  if(boot){
+    set.seed(seed)
+    bootsamp<-sample(unique(data$patient_id), replace=T)
+    bootsamp<-data.frame(patient_id=bootsamp, bootID=1:(length(bootsamp)))
+    data<-bootsamp %>% left_join(data) %>% select(-patient_id) %>% rename(patient_id=bootID)
+  }
+  NPresults<-vector(2, mode="list")
+  names(NPresults)<-c("Input", "Results")
+  NPresults[["Input"]]<-vector(3, mode="list")
+  names(NPresults[["Input"]])<-c("Model covariates", "Usage factors", "Quantiles")
+  NPresults[["Input"]][["Model covariates"]]<-vector(3, mode="list")
+  names(NPresults[["Input"]][["Model covariates"]])<-c("Baseline", "Time-varying (transplant)", "Time-varying (censoring)")
+  if(use_existing_models==F){
+    NPresults[["Input"]][["Model covariates"]][["Baseline"]]<-baseline_covariates
+    NPresults[["Input"]][["Model covariates"]][["Time-varying (transplant)"]]<-time_varying_covariates_transplant
+    NPresults[["Input"]][["Model covariates"]][["Time-varying (censoring)"]]<-time_varying_covariates_censoring
+  }
+  NPresults[["Input"]][["Usage factors"]]<-c(increased_risk_usage_factor, standard_risk_usage_factor)
+  names(NPresults[["Input"]][["Usage factors"]])<-c("Increased risk_usage factor", "Standard_risk usage factor")
+  NPresults[["Input"]][["Quantiles"]]<-vector(10, mode="list")
+  if(use_existing_models==F){
+    NPresults[["Input"]][["Quantiles"]][[1]]<- quantile(data$baseline_MELD,probs=c(0.35,0.65))
+    NPresults[["Input"]][["Quantiles"]][[2]]<- quantile(data$baseline_MELD, probs=c(0.05,0.95))
+    NPresults[["Input"]][["Quantiles"]][[3]]<- quantile(data$age,probs=c(0.35,0.65))
+    NPresults[["Input"]][["Quantiles"]][[4]]<- quantile(data$age, probs=c(0.05,0.95))
+    NPresults[["Input"]][["Quantiles"]][[5]]<- quantile(data$height,probs=c(0.35,0.65))
+    NPresults[["Input"]][["Quantiles"]][[6]]<- quantile(data$height, probs=c(0.05,0.95))
+    NPresults[["Input"]][["Quantiles"]][[7]]<- quantile(data$weight,probs=c(0.35,0.65))
+    NPresults[["Input"]][["Quantiles"]][[8]]<- quantile(data$weight, probs=c(0.05,0.95))
+    NPresults[["Input"]][["Quantiles"]][[9]]<- quantile(data$MELD,probs=c(0.35,0.65))
+    NPresults[["Input"]][["Quantiles"]][[10]]<-quantile(data$MELD, probs=c(0.05,0.95))
+  }
+  NPresults[["Results"]]<-vector(4, mode="list")
+  names(NPresults[["Results"]])<-c("Models", "Weights", "Non-parametric summaries (by WL)", "Non-parametric summaries (by cal)")
+  NPresults[["Results"]][["Models"]]<-vector(5, mode="list")
+  names(NPresults[["Results"]][["Models"]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
+  NPresults[["Results"]][["Weights"]]<-data.frame( 
+    #Administrative variables 
+    patient_id = data$patient_id,
+    interval_WL = data$interval_WL,
+    interval_cal = data$interval_cal,
+    #Events 
+    post_transplant = data$post_transplant,
+    transplant_event = data$transplant_event,
+    censoring_event_admin = data$censoring_event_admin,
+    censoring_event = data$censoring_event,
+    transplant_and_standard_risk = data$transplant_and_standard_risk,
+    transplant_and_increased_risk = data$transplant_and_increased_risk,
+    transplant_and_censored_at_tx = data$transplant_and_censored_at_tx,
+    death_event = data$death_event,
+    #Predicted treatment probabilities
+    prob_censored_admin = NA,
+    prob_censored = NA,
+    prob_censored_at_transplant = NA,
+    prob_increased_risk_transplant = NA,
+    prob_standard_risk_transplant = NA,
+    #Weights for censoring
+    Wt_censoring_admin= NA,
+    Wt_censoring= NA,
+    Wt_censored_at_transplant=NA,
+    Wt_no_int=NA,
+    Wt_no_int_cal=NA,
+    Wt_naive=NA,
+    Wt_naive_cal=NA,
+    #Weights for resource constraints (wait-list entry time-scale)
+    Wt_d_WL=1,
+    Wt_dd_WL=1,
+    Wt_A_1_nat_WL=1,
+    Wt_A_2_nat_WL=1,
+    Wt_g_WL=1,
+    #Weights for resource constraints (calendar time-scale)
+    Wt_d_cal=1,
+    Wt_dd_cal=1,
+    Wt_A_1_nat_cal=1,
+    Wt_A_2_nat_cal=1,
+    Wt_g_cal=1                                                       ) 
+  NPresults[["Results"]][["Non-parametric summaries (by WL)"]]<-matrix(NA, K+1, 41)
+  colnames(NPresults[["Results"]][["Non-parametric summaries (by WL)"]])<-c(
+    "Lambda_A_1",  "Lambda_A_1_g", "Lambda_A_1_gplus", "Lambda_A_1_gplus_naive",  "chi_1", "rho_1", "delta_1",  "E_A_1_HT", "E_A_1_KM", "E_A_1_g_KM", "E_A_1_gplus_HT", "E_A_1_gplus_KM", "E_A_1_gplus_naive_HT", "E_A_1_gplus_naive_KM",
+    "Lambda_A_2",  "Lambda_A_2_g", "Lambda_A_2_gplus","chi_2", "rho_2", "delta_2", "E_A_2_HT", "E_A_2_KM", "E_A_2_g_KM", "E_A_2_gplus_HT", "E_A_2_gplus_KM", "E_A_2_gplus_naive",
+    "Lambda_Y_r", "Lambda_Y_r_g", "Lambda_Y_r_naive", "Lambda_Y", "Lambda_Y_g", "Lambda_Y_naive", "Inc_Y_HT", "Inc_Y_g_HT","Inc_Y_naive_HT","E_Y_HT", "E_Y_KM", "E_Y_g_HT", "E_Y_g_KM", "E_Y_naive_HT", "E_Y_naive_KM"
+  )
+  rownames(NPresults[["Results"]][["Non-parametric summaries (by WL)"]])<-0:K
+  NPresults[["Results"]][["Non-parametric summaries (by cal)"]]<-matrix(NA, max(data$interval_cal)+1, 44)
+  colnames(NPresults[["Results"]][["Non-parametric summaries (by cal)"]])<-c(colnames(NPresults[["Results"]][["Non-parametric summaries (by WL)"]])[1:41], "n_unadmmitted", "E_R_1_gplus_HT","E_R_2_gplus_HT")
+  rownames(NPresults[["Results"]][["Non-parametric summaries (by cal)"]])<-0:max(data$interval_cal)
+  NPresults[["Results"]][["Non-parametric summaries (by cal)"]][,"n_unadmmitted"]<-
+    data%>%filter(interval_WL==0)%>%{table(.$interval_cal)} %>% {sum(.) - cumsum(.)} %>% c(., 0,0,0)
+  
+  
+  
+  
+  
+  if(use_existing_models==F){      
+    #Model formulae      
+    transplant_var_list <- list("ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))",
+                                paste(baseline_covariates, collapse=" + "),
+                                paste(time_varying_covariates_transplant, collapse=" + "))
+    censoring_var_list <- list("ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))",
+                               paste(baseline_covariates, collapse=" + "),
+                               paste(time_varying_covariates_censoring, collapse=" + "))
+    
+    transplant_formula_RHS <- paste(
+      transplant_var_list[transplant_var_list != ""], 
+      collapse=" + "
+    )
+    censoring_formula_RHS <- paste(
+      censoring_var_list[censoring_var_list != ""], 
+      collapse=" + "
+    )
+    
+    #Saving model results
+    
+    Begin<-Sys.time()
+    
+    NPresults[["Results"]][["Models"]][["Censoring (Admin)"]]<- (data %>% {table(.$interval_WL, .$censoring_event_admin)} %>% prop.table(margin=1) )[,2]
+    
+    gc()
+    NPresults[["Results"]][["Models"]][["Censoring (LTFU)"]]<-  bigglm(formula=as.formula(paste("censoring_event", censoring_formula_RHS, sep=" ~ ")), 
+                                                                       data=data %>% filter(censoring_event_admin==0), 
+                                                                       family=binomial(), maxit=20)
+    gc()
+    NPresults[["Results"]][["Models"]][["Censoring (transplant)"]]<-  bigglm(formula=as.formula(paste("transplant_and_censored_at_tx", transplant_formula_RHS, sep=" ~ ")), 
+                                                                             data=data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0), 
+                                                                             family=binomial(), chunksize=(data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0) %>% nrow)/2, maxit=20)
+    gc()
+    NPresults[["Results"]][["Models"]][["Standard Risk"]]<-  bigglm(formula=as.formula(paste("transplant_and_standard_risk", transplant_formula_RHS, sep=" ~ ")), 
+                                                                    data=data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0 & transplant_and_censored_at_tx == 0), 
+                                                                    family=binomial(), chunksize=(data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0 & transplant_and_censored_at_tx == 0) %>% nrow)/3, maxit=20)
+    gc()
+    NPresults[["Results"]][["Models"]][["Increased Risk"]]<-  bigglm(formula=as.formula(paste("transplant_and_increased_risk", transplant_formula_RHS, sep=" ~ ")), 
+                                                                     data=data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0 & transplant_and_censored_at_tx == 0 & transplant_and_standard_risk==0), 
+                                                                     family=binomial(), chunksize=(data %>% filter(censoring_event_admin==0 & censoring_event==0 & post_transplant==0 & transplant_and_censored_at_tx == 0 & transplant_and_standard_risk==0) %>% nrow)/5, maxit=20)
+    gc()
+    #Saving probabilities of intervention events
+    NPresults[["Results"]][["Weights"]]<-NPresults[["Results"]][["Weights"]] %>% mutate(
+      prob_censored_admin = NPresults[["Results"]][["Models"]][["Censoring (Admin)"]][interval_WL+1],
+      prob_censored = predict(NPresults[["Results"]][["Models"]][["Censoring (LTFU)"]], 
+                              newdata=data, type="response"),
+      prob_censored_at_transplant = 
+        predict(NPresults[["Results"]][["Models"]][["Censoring (transplant)"]], 
+                newdata=data, type="response"),
+      prob_standard_risk_transplant =
+        predict(NPresults[["Results"]][["Models"]][["Standard Risk"]], 
+                newdata=data, type="response"),
+      prob_increased_risk_transplant = 
+        predict(NPresults[["Results"]][["Models"]][["Increased Risk"]], 
+                newdata=data, type="response"),
+      Wt_censoring_admin = case_when(censoring_event_admin == 1 ~ 0,
+                                     TRUE ~ 1/(1-prob_censored_admin)),
+      Wt_censoring = case_when(censoring_event == 1 ~ 0,
+                               TRUE ~ 1/(1-prob_censored)),
+      Wt_censored_at_transplant = case_when(post_transplant == 1 ~ 1,
+                                            transplant_and_censored_at_tx == 1 ~ 0,
+                                            TRUE ~ 1/(1-prob_censored_at_transplant)),
+      Wt_censored_high_risk = case_when(post_transplant == 1 ~ 1,
+                                        transplant_and_increased_risk == 1 ~ 0,
+                                        TRUE ~ 1/(1-prob_increased_risk_transplant)),
+      Wt_d_WL = 1,
+      Wt_dd_WL = 1,
+      Wt_d_cal = 1,
+      Wt_dd_cal = 1,
+    ) %>% group_by(patient_id) %>% mutate(
+      Wt_no_int = cumprod(Wt_censoring_admin*Wt_censoring*Wt_censored_at_transplant),
+      Wt_naive  = cumprod(Wt_censoring_admin*Wt_censoring*Wt_censored_at_transplant*Wt_censored_high_risk),
+      Wt_no_int_cal = cumprod(Wt_censoring*Wt_censored_at_transplant),
+      Wt_naive_cal  = cumprod(Wt_censoring*Wt_censored_at_transplant*Wt_censored_high_risk)
+    ) %>%  ungroup()
+    
+    gc()  
+  }
+  if(use_existing_models==T){       
+    NPresults[["Results"]][["Weights"]]<-NPresults[["Results"]][["Weights"]] %>% mutate(
+      prob_censored_admin = existing_model[["Censoring (Admin)"]][interval_WL+1],
+      prob_censored = predict(existing_model[["Censoring (LTFU)"]], 
+                              newdata=data, type="response"),
+      prob_censored_at_transplant = 
+        predict(existing_model[["Censoring (transplant)"]], 
+                newdata=data, type="response"),
+      prob_standard_risk_transplant =
+        predict(existing_model[["Standard Risk"]], 
+                newdata=data, type="response"),
+      prob_increased_risk_transplant = 
+        predict(existing_model[["Increased Risk"]], 
+                newdata=data, type="response"),
+      Wt_censoring_admin = case_when(censoring_event_admin == 1 ~ 0,
+                                     TRUE ~ 1/(1-prob_censored_admin)),
+      Wt_censoring = case_when(censoring_event == 1 ~ 0,
+                               TRUE ~ 1/(1-prob_censored)),
+      Wt_censored_at_transplant = case_when(post_transplant == 1 ~ 1,
+                                            transplant_and_censored_at_tx == 1 ~ 0,
+                                            TRUE ~ 1/(1-prob_censored_at_transplant)),
+      Wt_censored_high_risk = case_when(post_transplant == 1 ~ 1,
+                                        transplant_and_increased_risk == 1 ~ 0,
+                                        TRUE ~ 1/(1-prob_increased_risk_transplant)),
+      Wt_d_WL = 1,
+      Wt_dd_WL = 1,
+      Wt_d_cal = 1,
+      Wt_dd_cal = 1,
+    ) %>% group_by(patient_id) %>% mutate(
+      Wt_no_int = cumprod(Wt_censoring_admin*Wt_censoring*Wt_censored_at_transplant),
+      Wt_naive = cumprod(Wt_censoring_admin*Wt_censoring*Wt_censored_at_transplant*Wt_censored_high_risk),
+      Wt_no_int_cal = cumprod(Wt_censoring*Wt_censored_at_transplant),
+      Wt_naive_cal  = cumprod(Wt_censoring*Wt_censored_at_transplant*Wt_censored_high_risk)
+    ) %>%  ungroup()
+    
+    gc()          
+  }     
+  
+  NPresults[["Results"]][2:4]<- adjust_wts(
+    data_with_weights = NPresults[["Results"]][["Weights"]], 
+    increased_risk_usage_factor = increased_risk_usage_factor, 
+    standard_risk_usage_factor = standard_risk_usage_factor,
+    timescale = timescale,
+    NPsumm_WL  = NPresults[["Results"]][["Non-parametric summaries (by WL)"]],
+    NPsumm_cal = NPresults[["Results"]][["Non-parametric summaries (by cal)"]],
+    maxtime = K
+  ) 
+  
+  NPresults[["Results"]][["Weights"]]<-NPresults[["Results"]][["Weights"]] %>% select(Wt_g_WL, Wt_g_cal)
+  #print(data_with_weights$Wt_g_cumprod %>% quantile(seq(0,1,0.1)))
+  if(boot==F){
+    return(NPresults)
+  }
+  if(boot==T){
+    bootstrap_results[[1]][seed,1:(K+1) , ,regime]<<-NPresults[["Results"]][[3]]
+    if(regime=="g_1" & use_existing_models==F){
+      bootstrap_results[[2]][[seed]]<<-NPresults[["Results"]][[1]]
+    }
+    return(NULL)
+    gc()
+  }
+  
+}
+
+#(max(data_with_weights$interval_WL)+1)
+adjust_wts <- function(data_with_weights, increased_risk_usage_factor, standard_risk_usage_factor, timescale, NPsumm_WL, NPsumm_cal, maxtime) {
+  if(timescale %in% c("WL", "both")){
+    #Initialize cumulative treatment weights
+    data_with_weights$Wt_g_WL<-data_with_weights$Wt_no_int
+    n<-length(unique(data_with_weights$patient_id))
+    #Iterate over time-scale
+    for (j in 1:(maxtime+1)) {
+      #Update weights in interval j-1, prior to intervention on transplants of either type 
+      data_with_weights <- data_with_weights %>%  
+        mutate(
+          Wt_A_1_nat_WL  =  case_when(
+            interval_WL==0 ~   Wt_no_int,
+            interval_WL==j-1 ~ lag(Wt_g_WL)*Wt_censoring_admin*Wt_censoring*Wt_censored_at_transplant,
+            TRUE             ~ Wt_A_1_nat_WL
+          )
+        ) 
+      #Compute law-dependent parameters for IPI intervention on A1 in interval j-1
+      data_j<-data_with_weights %>% filter(interval_WL == j-1)
+      NPsumm_WL[j, "Lambda_A_1"]   <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_no_int)     / sum((1-.$post_transplant)*.$Wt_no_int)}
+      NPsumm_WL[j, "Lambda_A_1_g"] <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_1_nat_WL) / sum((1-.$post_transplant)*.$Wt_A_1_nat_WL)}
+      NPsumm_WL[j, "Lambda_A_1_gplus_naive"]   <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_naive)     / sum((1-.$post_transplant)*.$Wt_naive)}
+      NPsumm_WL[j, "E_A_1_HT"]      <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_no_int)/n}
+      NPsumm_WL[j, "E_A_1_KM"]      <- ifelse(j==1, NPsumm_WL[j, "Lambda_A_1"],
+                                              NPsumm_WL[j, "Lambda_A_1"]*
+                                                prod(1-NPsumm_WL[1:(j-1), "Lambda_A_1"])*
+                                                prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2"])*
+                                                prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r"])          
+      )
+      NPsumm_WL[j, "E_A_1_g_KM"]<-ifelse(j==1, NPsumm_WL[j, "Lambda_A_1_g"],
+                                         NPsumm_WL[j, "Lambda_A_1_g"]*
+                                           prod(1-NPsumm_WL[1:(j-1), "Lambda_A_1_gplus"])*
+                                           prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2_gplus"])*
+                                           prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_WL[j, "chi_1"]      <-NPsumm_WL[j, "Lambda_A_1"] <= 1
+      NPsumm_WL[j, "rho_1"]      <-ifelse(NPsumm_WL[j, "Lambda_A_1"]==0, NPsumm_WL[j-1, "rho_1"],
+                                          (standard_risk_usage_factor*NPsumm_WL[j, "E_A_1_KM"] <= NPsumm_WL[j, "E_A_1_g_KM"])
+      )
+      
+      NPsumm_WL[j, "delta_1"]    <- ifelse(!NPsumm_WL[j, "Lambda_A_1"], 1,
+                                           ( ( (   standard_risk_usage_factor*NPsumm_WL[j, "E_A_1_KM"]) / (   NPsumm_WL[j, "E_A_1_g_KM"]) )^ (  NPsumm_WL[j, "rho_1"]) *
+                                               ( (1- standard_risk_usage_factor*NPsumm_WL[j, "E_A_1_KM"]*NPsumm_WL[j, "Lambda_A_1_g"]/NPsumm_WL[j, "E_A_1_g_KM"]) / (1- NPsumm_WL[j, "Lambda_A_1_g"]) )^ (1-NPsumm_WL[j, "rho_1"])
+                                           )*NPsumm_WL[j, "chi_1"]
+      )
+      
+      
+      #Update weights for IPI intervention on A1 in interval j-1  
+      data_with_weights <- data_with_weights %>% mutate(
+        Wt_d_WL = case_when(interval_WL                  != j-1 ~ Wt_d_WL,
+                            post_transplant              == 1   ~ 1,
+                            transplant_and_standard_risk == 1   ~ 
+                              (   NPsumm_WL[j, "delta_1"]                                                                     )^(  NPsumm_WL[j, "rho_1"])*
+                              ((1-NPsumm_WL[j, "delta_1"]*(1-prob_standard_risk_transplant))/   prob_standard_risk_transplant )^(1-NPsumm_WL[j, "rho_1"]),
+                            TRUE                                ~
+                              ((1-NPsumm_WL[j, "delta_1"]*   prob_standard_risk_transplant )/(1-prob_standard_risk_transplant))^(  NPsumm_WL[j, "rho_1"])*
+                              (   NPsumm_WL[j, "delta_1"]                                                                     )^(1-NPsumm_WL[j, "rho_1"])
+        ),
+        Wt_A_2_nat_WL =  case_when(
+          interval_WL                  == j-1 ~ Wt_A_1_nat_WL*Wt_d_WL,
+          TRUE                                ~ Wt_A_2_nat_WL
+        )
+        
+      )
+      #Compute law-dependent parameters for IPI intervention on A2 in interval j-1
+      data_j<-data_with_weights %>% filter(interval_WL == j-1)
+      
+      
+      NPsumm_WL[j, "Lambda_A_1_gplus"]<-data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_2_nat_WL) / sum((1-.$post_transplant)*.$Wt_A_2_nat_WL)}
+      NPsumm_WL[j, "E_A_1_gplus_HT"]<- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_2_nat_WL)/n}
+      NPsumm_WL[j, "E_A_1_gplus_KM"]<-ifelse(j==1, NPsumm_WL[j, "Lambda_A_1_gplus"],
+                                             NPsumm_WL[j, "Lambda_A_1_gplus"]*
+                                               prod(1-NPsumm_WL[1:(j-1), "Lambda_A_1_gplus"])*
+                                               prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2_gplus"])*
+                                               prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_WL[j, "E_A_1_gplus_naive_HT"]<- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_naive)/n}
+      NPsumm_WL[j, "E_A_1_gplus_naive_KM"]<-ifelse(j==1, NPsumm_WL[j, "Lambda_A_1_gplus_naive"],
+                                                   NPsumm_WL[j, "Lambda_A_1_gplus_naive"]*
+                                                     prod(1-NPsumm_WL[1:(j-1), "Lambda_A_1_gplus_naive"])*
+                                                     prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r_naive"])          
+      )
+      NPsumm_WL[j, "Lambda_A_2"]   <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_no_int)     / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_no_int)}
+      NPsumm_WL[j, "Lambda_A_2_g"] <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_A_2_nat_WL) / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_A_2_nat_WL)}
+      NPsumm_WL[j, "E_A_2_HT"]      <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_no_int)/n}
+      NPsumm_WL[j, "E_A_2_KM"]      <- ifelse(j==1, NPsumm_WL[j, "Lambda_A_2"],
+                                              NPsumm_WL[j, "Lambda_A_2"]*
+                                                prod(1-NPsumm_WL[1:(j)  , "Lambda_A_1"])*
+                                                prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2"])*
+                                                prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r"])         
+      )
+      NPsumm_WL[j, "E_A_2_g_KM"]<-ifelse(j==1, NPsumm_WL[j, "Lambda_A_2_g"],
+                                         NPsumm_WL[j, "Lambda_A_2_g"]*
+                                           prod(1-NPsumm_WL[1:(j), "Lambda_A_1_gplus"])*
+                                           prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2_gplus"])*
+                                           prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_WL[j, "chi_2"]      <-NPsumm_WL[j, "Lambda_A_2"] <= 1
+      NPsumm_WL[j, "rho_2"]      <-ifelse(NPsumm_WL[j, "Lambda_A_2"]==0, NPsumm_WL[j-1, "rho_2"],
+                                          (increased_risk_usage_factor*NPsumm_WL[j, "E_A_2_KM"] <= NPsumm_WL[j, "E_A_2_g_KM"])
+      )
+      
+      
+      NPsumm_WL[j, "delta_2"]    <- ifelse(!NPsumm_WL[j, "Lambda_A_2"], 1,
+                                           ( ( (   increased_risk_usage_factor*NPsumm_WL[j, "E_A_2_KM"]) / (   NPsumm_WL[j, "E_A_2_g_KM"]) )^ (  NPsumm_WL[j, "rho_2"]) *
+                                               ( (1- increased_risk_usage_factor*NPsumm_WL[j, "E_A_2_KM"]*NPsumm_WL[j, "Lambda_A_2_g"]/NPsumm_WL[j, "E_A_2_g_KM"]) / (1- NPsumm_WL[j, "Lambda_A_2_g"]) )^ (1-NPsumm_WL[j, "rho_2"])
+                                           )*NPsumm_WL[j, "chi_2"]
+      )      
+      #Update weights for IPI intervention on A2 in interval j-1  
+      data_with_weights <- data_with_weights %>% mutate(
+        Wt_dd_WL = case_when(interval_WL                  != j-1 ~ Wt_dd_WL,
+                             post_transplant              == 1 |
+                               transplant_and_standard_risk == 1    ~ 1,
+                             transplant_and_increased_risk == 1   ~ 
+                               (   NPsumm_WL[j, "delta_2"]                                                                       )^(  NPsumm_WL[j, "rho_2"])*
+                               ((1-NPsumm_WL[j, "delta_2"]*(1-prob_increased_risk_transplant))/   prob_increased_risk_transplant )^(1-NPsumm_WL[j, "rho_2"]),
+                             TRUE                                ~
+                               ((1-NPsumm_WL[j, "delta_2"]*   prob_increased_risk_transplant )/(1-prob_increased_risk_transplant))^(  NPsumm_WL[j, "rho_2"])*
+                               (   NPsumm_WL[j, "delta_2"]                                                                       )^(1-NPsumm_WL[j, "rho_2"])
+        ),
+        Wt_g_WL =  case_when(
+          interval_WL                  == j-1 ~ Wt_A_2_nat_WL*Wt_dd_WL,
+          TRUE                                ~ Wt_g_WL
+        )
+      )
+      
+      #Compute final law-dependent parameters for interval j-1
+      data_j<-data_with_weights %>% filter(interval_WL == j-1)
+      NPsumm_WL[j, "Lambda_A_2_gplus"]<-data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_g_WL) / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_g_WL)}
+      NPsumm_WL[j, "E_A_2_gplus_HT"]<- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_g_WL)/n}
+      NPsumm_WL[j, "E_A_2_gplus_KM"]<-ifelse(j==1, NPsumm_WL[j, "Lambda_A_2_gplus"],
+                                             NPsumm_WL[j, "Lambda_A_2_gplus"]*
+                                               prod(1-NPsumm_WL[1:(j), "Lambda_A_1_gplus"])*
+                                               prod(1-NPsumm_WL[1:(j-1), "Lambda_A_2_gplus"])*
+                                               prod(1-NPsumm_WL[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_WL[j, "E_A_2_gplus_naive"]<-0
+      NPsumm_WL[j, "Lambda_Y_r_g"]  <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_g_WL)   / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_g_WL)}        
+      NPsumm_WL[j, "Lambda_Y_r"]    <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_no_int) / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_no_int)}
+      NPsumm_WL[j, "Lambda_Y_r_naive"]    <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_naive) / sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_naive)}
+      NPsumm_WL[j, "Lambda_Y_g"]    <-data_j %>% {sum(.$death_event*.$Wt_g_WL)   / sum(.$Wt_g_WL)}        
+      NPsumm_WL[j, "Lambda_Y"]      <-data_j %>% {sum(.$death_event*.$Wt_no_int)   / sum(.$Wt_no_int)}
+      NPsumm_WL[j, "Lambda_Y_naive"]      <-data_j %>% {sum(.$death_event*.$Wt_naive)   / sum(.$Wt_naive)}
+      NPsumm_WL[j, "Inc_Y_HT"]      <-data_j %>% {sum(.$death_event*.$Wt_no_int)   / n}
+      NPsumm_WL[j, "Inc_Y_g_HT"]    <-data_j %>% {sum(.$death_event*.$Wt_g_WL)   / n}   
+      NPsumm_WL[j, "Inc_Y_naive_HT"]    <-data_j %>% {sum(.$death_event*.$Wt_naive)   / n}
+      NPsumm_WL[j, "E_Y_g_HT"]      <-sum(NPsumm_WL[1:j, "Inc_Y_g_HT"]) 
+      NPsumm_WL[j, "E_Y_g_KM"]      <-1- prod(1-NPsumm_WL[1:j, "Lambda_Y_g"])    
+      NPsumm_WL[j, "E_Y_HT"]        <-sum(NPsumm_WL[1:j, "Inc_Y_HT"]) 
+      NPsumm_WL[j, "E_Y_KM"]        <-1- prod(1-NPsumm_WL[1:j, "Lambda_Y"])       
+      NPsumm_WL[j, "E_Y_naive_HT"]        <-sum(NPsumm_WL[1:j, "Inc_Y_naive_HT"]) 
+      NPsumm_WL[j, "E_Y_naive_KM"]        <-1- prod(1-NPsumm_WL[1:j, "Lambda_Y_naive"])          
+      
+      print(j)
+      gc()
+    }    
+  }
+  if(timescale %in% c("cal", "both")){
+    data_with_weights$Wt_g_cal<-data_with_weights$Wt_no_int
+    n<-length(unique(data_with_weights$patient_id))
+    
+    #
+    #Iterate over time-scale
+    for (j in 1:(max(data_with_weights$interval_cal)+1)) {
+      #Initialize cumulative treatment weights
+      data_with_weights <- data_with_weights %>%  
+        mutate(
+          Wt_A_1_nat_cal  =  case_when(
+            interval_WL==0 ~   Wt_no_int_cal,
+            interval_cal==j-1 ~ lag(Wt_g_cal)*Wt_censoring*Wt_censored_at_transplant,
+            TRUE             ~ Wt_A_1_nat_cal
+          )
+        ) 
+      #Compute law-dependent parameters for IPI intervention on A1 in interval j-1
+      data_j<-data_with_weights %>% filter(interval_cal == j-1)
+      NPsumm_cal[j, "Lambda_A_1"]   <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_no_int_cal)  / (sum((1-.$post_transplant)*.$Wt_no_int_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_A_1_g"] <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_1_nat_cal) / (sum((1-.$post_transplant)*.$Wt_A_1_nat_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "E_A_1_HT"]      <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_no_int_cal)/n}
+      NPsumm_cal[j, "E_A_1_KM"]      <- ifelse(j==1, NPsumm_cal[j, "Lambda_A_1"],
+                                               NPsumm_cal[j, "Lambda_A_1"]*
+                                                 prod(1-NPsumm_cal[1:(j-1), "Lambda_A_1"])*
+                                                 prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2"])*
+                                                 prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r"])          
+      )
+      NPsumm_cal[j, "E_A_1_g_KM"]      <- ifelse(j==1, NPsumm_cal[j, "Lambda_A_1_g"],
+                                                 NPsumm_cal[j, "Lambda_A_1_g"]*
+                                                   prod(1-NPsumm_cal[1:(j-1), "Lambda_A_1_gplus"])*
+                                                   prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2_gplus"])*
+                                                   prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_cal[j, "chi_1"]      <-NPsumm_cal[j, "Lambda_A_1"] <= 1
+      NPsumm_cal[j, "rho_1"]      <-ifelse(NPsumm_cal[j, "Lambda_A_1"]==0, NPsumm_cal[j-1, "rho_1"],
+                                           (standard_risk_usage_factor*NPsumm_cal[j, "E_A_1_HT"] <= (   data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_1_nat_cal) / n}))
+      )
+      NPsumm_cal[j, "E_R_1_gplus_HT"] <-data_j %>% {sum((1-.$post_transplant)*.$Wt_A_1_nat_cal) / n}
+      
+      
+      NPsumm_cal[j, "delta_1"]    <- ifelse(!NPsumm_cal[j, "Lambda_A_1"], 1,
+                                            (   ( (   standard_risk_usage_factor*NPsumm_cal[j, "E_A_1_HT"]) / (   data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_1_nat_cal) / n}) )^ (  NPsumm_cal[j, "rho_1"]) *
+                                                  ( (1- standard_risk_usage_factor*NPsumm_cal[j, "E_A_1_HT"]/NPsumm_cal[j, "E_R_1_gplus_HT"]) / (1- (   data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_1_nat_cal) / n})/NPsumm_cal[j, "E_R_1_gplus_HT"]) )^ (1-  NPsumm_cal[j, "rho_1"])
+                                            )*NPsumm_cal[j, "chi_1"]
+      )
+      
+      
+      
+      #Update weights for IPI intervention on A1 in interval j-1  
+      data_with_weights <- data_with_weights %>% mutate(
+        Wt_d_cal = case_when(interval_cal                  != j-1 ~ Wt_d_cal,
+                             post_transplant              == 1   ~ 1,
+                             transplant_and_standard_risk == 1   ~ 
+                               (   NPsumm_cal[j, "delta_1"]                                                                     )^(  NPsumm_cal[j, "rho_1"])*
+                               ((1-NPsumm_cal[j, "delta_1"]*(1-prob_standard_risk_transplant))/   prob_standard_risk_transplant )^(1-NPsumm_cal[j, "rho_1"]),
+                             TRUE                                ~
+                               ((1-NPsumm_cal[j, "delta_1"]*   prob_standard_risk_transplant )/(1-prob_standard_risk_transplant))^(  NPsumm_cal[j, "rho_1"])*
+                               (   NPsumm_cal[j, "delta_1"]                                                                     )^(1-NPsumm_cal[j, "rho_1"])
+        ),
+        Wt_A_2_nat_cal =  case_when(
+          interval_cal                  == j-1 ~ Wt_A_1_nat_cal*Wt_d_cal,
+          TRUE                                ~ Wt_A_2_nat_cal
+        )
+        
+      )
+      #Compute law-dependent parameters for IPI intervention on A2 in interval j-1
+      data_j<-data_with_weights %>% filter(interval_cal == j-1)
+      
+      
+      NPsumm_cal[j, "Lambda_A_1_gplus"]<-data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_2_nat_cal) / (sum((1-.$post_transplant)*.$Wt_A_2_nat_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_A_1_gplus_naive"] <- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_naive_cal) / (sum((1-.$post_transplant)*.$Wt_naive_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "E_A_1_gplus_HT"]<- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_A_2_nat_cal)/n}
+      NPsumm_cal[j, "E_A_1_gplus_KM"]<-ifelse(j==1, NPsumm_cal[j, "Lambda_A_1_gplus"],
+                                              NPsumm_cal[j, "Lambda_A_1_gplus"]*
+                                                prod(1-NPsumm_cal[1:(j-1), "Lambda_A_1_gplus"])*
+                                                prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2_gplus"])*
+                                                prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_cal[j, "E_A_1_gplus_naive_HT"]<- data_j %>% {sum(.$transplant_and_standard_risk*.$Wt_naive_cal)/n}
+      NPsumm_cal[j, "E_A_1_gplus_naive_KM"]<-ifelse(j==1, NPsumm_cal[j, "Lambda_A_1_gplus"],
+                                                    NPsumm_cal[j, "Lambda_A_1_gplus_naive"]*
+                                                      prod(1-NPsumm_cal[1:(j-1), "Lambda_A_1_gplus_naive"])*
+                                                      prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r_naive"])          
+      ) 
+      NPsumm_cal[j, "Lambda_A_2"]   <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_no_int_cal)     / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_no_int_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_A_2_g"] <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_A_2_nat_cal) / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_A_2_nat_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "E_A_2_HT"]      <- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_no_int_cal)/n}
+      NPsumm_cal[j, "E_A_2_KM"]      <- ifelse(j==1, NPsumm_cal[j, "Lambda_A_2"],
+                                               NPsumm_cal[j, "Lambda_A_2"]*
+                                                 prod(1-NPsumm_cal[1:(j)  , "Lambda_A_1"])*
+                                                 prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2"])*
+                                                 prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r"])         
+      )
+      NPsumm_cal[j, "E_A_2_g_KM"]      <- ifelse(j==1, NPsumm_cal[j, "Lambda_A_2_g"],
+                                                 NPsumm_cal[j, "Lambda_A_2_g"]*
+                                                   prod(1-NPsumm_cal[1:(j)  , "Lambda_A_1_gplus"])*
+                                                   prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2_gplus"])*
+                                                   prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r_g"])         
+      )
+      NPsumm_cal[j, "chi_2"]      <-NPsumm_cal[j, "Lambda_A_2"] <= 1
+      NPsumm_cal[j, "rho_2"]      <-ifelse(NPsumm_cal[j, "Lambda_A_2"]==0, NPsumm_cal[j-1, "rho_2"],
+                                           (increased_risk_usage_factor*NPsumm_cal[j, "E_A_2_KM"] <= (   data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_A_2_nat_cal)/n}))
+      )
+      NPsumm_cal[j, "E_R_2_gplus_HT"] <-data_j %>% {sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_A_2_nat_cal) / n}
+      
+      NPsumm_cal[j, "delta_2"]    <- ifelse(!NPsumm_cal[j, "Lambda_A_2"], 1,
+                                            (   ( (   increased_risk_usage_factor*NPsumm_cal[j, "E_A_2_HT"]) / (   data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_A_2_nat_cal)/n}) )^ (  NPsumm_cal[j, "rho_2"]) *
+                                                  ( (1- increased_risk_usage_factor*NPsumm_cal[j, "E_A_2_HT"]/NPsumm_cal[j, "E_R_2_gplus_HT"]) / (1- (data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_A_2_nat_cal)/n})/NPsumm_cal[j, "E_R_2_gplus_HT"]) )^ (1-  NPsumm_cal[j, "rho_2"])
+                                            )*NPsumm_cal[j, "chi_2"]
+      )
+      
+      
+      
+      #Update weights for IPI intervention on A2 in interval j-1  
+      data_with_weights <- data_with_weights %>% mutate(
+        Wt_dd_cal = case_when(interval_cal                  != j-1 ~ Wt_dd_cal,
+                              post_transplant              == 1 |
+                                transplant_and_standard_risk == 1    ~ 1,
+                              transplant_and_increased_risk == 1   ~ 
+                                (   NPsumm_cal[j, "delta_2"]                                                                       )^(  NPsumm_cal[j, "rho_2"])*
+                                ((1-NPsumm_cal[j, "delta_2"]*(1-prob_increased_risk_transplant))/   prob_increased_risk_transplant )^(1-NPsumm_cal[j, "rho_2"]),
+                              TRUE                                ~
+                                ((1-NPsumm_cal[j, "delta_2"]*   prob_increased_risk_transplant )/(1-prob_increased_risk_transplant))^(  NPsumm_cal[j, "rho_2"])*
+                                (   NPsumm_cal[j, "delta_2"]                                                                       )^(1-NPsumm_cal[j, "rho_2"])
+        ),
+        Wt_g_cal =  case_when(
+          interval_cal                  == j-1 ~ Wt_A_2_nat_cal*Wt_dd_cal,
+          TRUE                                ~ Wt_g_cal
+        )
+      )
+      
+      #Compute final law-dependent parameters for interval j-1
+      data_j<-data_with_weights %>% filter(interval_cal == j-1)
+      NPsumm_cal[j, "Lambda_A_2_gplus"]<-data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_g_cal) / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*.$Wt_g_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "E_A_2_gplus_HT"]<- data_j %>% {sum(.$transplant_and_increased_risk*.$Wt_g_cal)/n}
+      NPsumm_cal[j, "E_A_2_gplus_KM"]<-ifelse(j==1, NPsumm_cal[j, "Lambda_A_2_gplus"],
+                                              NPsumm_cal[j, "Lambda_A_2_gplus"]*
+                                                prod(1-NPsumm_cal[1:(j), "Lambda_A_1_gplus"])*
+                                                prod(1-NPsumm_cal[1:(j-1), "Lambda_A_2_gplus"])*
+                                                prod(1-NPsumm_cal[1:(j-1), "Lambda_Y_r_g"])          
+      )
+      NPsumm_cal[j, "E_A_2_gplus_naive"]<-0
+      NPsumm_cal[j, "Lambda_Y_r_g"]  <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_g_cal)   / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_g_cal)+NPsumm_cal[j,"n_unadmmitted"])}        
+      NPsumm_cal[j, "Lambda_Y_r"]    <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_no_int_cal) / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_no_int_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_Y_r_naive"]    <-data_j %>% {sum(.$death_event*(1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_naive_cal) / (sum((1-.$post_transplant)*(1-.$transplant_and_standard_risk)*(1-.$transplant_and_increased_risk)*.$Wt_naive_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_Y_g"]    <-data_j %>% {sum(.$death_event*.$Wt_g_cal)   / (sum(.$Wt_g_cal)+NPsumm_cal[j,"n_unadmmitted"])}        
+      NPsumm_cal[j, "Lambda_Y"]      <-data_j %>% {sum(.$death_event*.$Wt_no_int_cal)   / (sum(.$Wt_no_int_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Lambda_Y_naive"]      <-data_j %>% {sum(.$death_event*.$Wt_naive_cal)   / (sum(.$Wt_naive_cal)+NPsumm_cal[j,"n_unadmmitted"])}
+      NPsumm_cal[j, "Inc_Y_HT"]      <-data_j %>% {sum(.$death_event*.$Wt_no_int_cal)   / n}
+      NPsumm_cal[j, "Inc_Y_g_HT"]    <-data_j %>% {sum(.$death_event*.$Wt_g_cal)   / n}    
+      NPsumm_cal[j, "Inc_Y_naive_HT"]    <-data_j %>% {sum(.$death_event*.$Wt_naive_cal)   / n}      
+      NPsumm_cal[j, "E_Y_g_HT"]      <-sum(NPsumm_cal[1:j, "Inc_Y_g_HT"]) 
+      NPsumm_cal[j, "E_Y_g_KM"]      <-1- prod(1-NPsumm_cal[1:j, "Lambda_Y_g"])    
+      NPsumm_cal[j, "E_Y_HT"]        <-sum(NPsumm_cal[1:j, "Inc_Y_HT"]) 
+      NPsumm_cal[j, "E_Y_KM"]        <-1- prod(1-NPsumm_cal[1:j, "Lambda_Y"])  
+      NPsumm_cal[j, "E_Y_naive_HT"]        <-sum(NPsumm_cal[1:j, "Inc_Y_naive_HT"]) 
+      NPsumm_cal[j, "E_Y_naive_KM"]        <-1- prod(1-NPsumm_cal[1:j, "Lambda_Y_naive"])   
+      print(j)
+      gc()
+    }
+  }
+  
+  return(list(data_with_weights, NPsumm_WL, NPsumm_cal))
+  
+}
+
+
+bootstrap_results<-vector(2, mode="list")
+names(bootstrap_results)<-c("Estimate Array", "Models")
+bootstrap_results[[1]]<-array(data=NA, dim=c(500, 137, 41, 3), dimnames=list(1:500, 0:136, c(
+  "Lambda_A_1",  "Lambda_A_1_g", "Lambda_A_1_gplus", "Lambda_A_1_gplus_naive",  "chi_1", "rho_1", "delta_1",  "E_A_1_HT", "E_A_1_KM", "E_A_1_g_KM", "E_A_1_gplus_HT", "E_A_1_gplus_KM", "E_A_1_gplus_naive_HT", "E_A_1_gplus_naive_KM",
+  "Lambda_A_2",  "Lambda_A_2_g", "Lambda_A_2_gplus","chi_2", "rho_2", "delta_2", "E_A_2_HT", "E_A_2_KM", "E_A_2_g_KM", "E_A_2_gplus_HT", "E_A_2_gplus_KM", "E_A_2_gplus_naive",
+  "Lambda_Y_r", "Lambda_Y_r_g", "Lambda_Y_r_naive", "Lambda_Y", "Lambda_Y_g", "Lambda_Y_naive", "Inc_Y_HT", "Inc_Y_g_HT","Inc_Y_naive_HT","E_Y_HT", "E_Y_KM", "E_Y_g_HT", "E_Y_g_KM", "E_Y_naive_HT", "E_Y_naive_KM"
+), c("g_1", "g_2", "g_3")))
+bootstrap_results[[2]]<-vector(500, mode="list")
+for(i in 1:500){
+  bootstrap_results[[2]][[i]]<-vector(5, mode="list")
+  names(bootstrap_results[[2]][[i]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
+}
+
+#mapply(estimate, seed=bootstart:bootend, MoreArgs = list(
+#  data=candidates_analysis,
+#  baseline_covariates = list("ns(baseline_MELD,knots=NPresults[[1]][[3]][[1]], Boundary.knots=NPresults[[1]][[3]][[2]])", 
+#                             "baseline_MELD_exception", "status1", "gender", "race", "year_of_listing",
+#                             "ns(age,knots=NPresults[[1]][[3]][[3]], Boundary.knots=NPresults[[1]][[3]][[4]])", 
+#                             "ns(height,knots=NPresults[[1]][[3]][[5]], Boundary.knots=NPresults[[1]][[3]][[6]])", 
+#                             "ns(weight,knots=NPresults[[1]][[3]][[7]], Boundary.knots=NPresults[[1]][[3]][[8]])",
+#                             "accept_incompatible_blood_type", "accept_extra_corporeal_liver", "accept_liver_segment",
+#                             "accept_HBV_positive_donor", "accept_HCV_positive_donor",
+#                             "patient_on_life_support", "functional_status", "primary_diagnosis", "spontaneous_bacterial_peritonitis",
+#                             "history_of_PV_thrombosis", "history_of_TIPSS"),
+#  time_varying_covariates_transplant = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
+#                                                MELD_exception*
+#                                                ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
+#  time_varying_covariates_censoring = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
+#                                               MELD_exception*
+#                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))",
+#                                           "post_transplant*
+#                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
+#  increased_risk_usage_factor = 0, #(R+)
+#  standard_risk_usage_factor = 1,  #(R+)
+#  timescale = "WL", #("WL", "cal", "both")
+#  K=89, boot=T,  regime="g_1"
+#)
+#)
+
+save(bootstrap_results, file=paste0("LimitedC/Boot_Results/Run1/bootresults_test_12202021.RData"))
