@@ -626,5 +626,5 @@ for(i in 1:500){
 #)
 
 
-mcmapply(FUN=function(x){bootstrap_results[[1]][x,,,"g_1"]}, x=bootstart:bootend, mc.cores=2)
+mcmapply(FUN=function(x){bootstrap_results[[1]][x,,,"g_1"]<-x}, x=bootstart:bootend, mc.cores=2)
 save(bootstrap_results, file=paste0("/home/sarvet/LimitedC/Boot_Results/Run1/bootresults_test_12202021.RData"))
