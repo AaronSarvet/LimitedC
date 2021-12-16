@@ -599,32 +599,32 @@ for(i in 1:500){
   names(bootstrap_results[[2]][[i]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
 }
 
-#mcmapply(estimate, seed=bootstart:bootend, mc.cores=2, MoreArgs = list(
-#  data=candidates_analysis,
-#  baseline_covariates = list("ns(baseline_MELD,knots=NPresults[[1]][[3]][[1]], Boundary.knots=NPresults[[1]][[3]][[2]])", 
-#                             "baseline_MELD_exception", "status1", "gender", "race", "year_of_listing",
-#                             "ns(age,knots=NPresults[[1]][[3]][[3]], Boundary.knots=NPresults[[1]][[3]][[4]])", 
-#                             "ns(height,knots=NPresults[[1]][[3]][[5]], Boundary.knots=NPresults[[1]][[3]][[6]])", 
-#                             "ns(weight,knots=NPresults[[1]][[3]][[7]], Boundary.knots=NPresults[[1]][[3]][[8]])",
-#                             "accept_incompatible_blood_type", "accept_extra_corporeal_liver", "accept_liver_segment",
-#                             "accept_HBV_positive_donor", "accept_HCV_positive_donor",
-#                             "patient_on_life_support", "functional_status", "primary_diagnosis", "spontaneous_bacterial_peritonitis",
-#                             "history_of_PV_thrombosis", "history_of_TIPSS"),
-#  time_varying_covariates_transplant = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
-#                                                MELD_exception*
-#                                                ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
-#  time_varying_covariates_censoring = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
-#                                               MELD_exception*
-#                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))",
-#                                           "post_transplant*
-#                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
-#  increased_risk_usage_factor = 0, #(R+)
-#  standard_risk_usage_factor = 1,  #(R+)
-#  timescale = "WL", #("WL", "cal", "both")
-#  K=89, boot=T,  regime="g_1"
-#)
-#)
+mcmapply(estimate, seed=bootstart:bootend, mc.cores=2, MoreArgs = list(
+  data=candidates_analysis,
+  baseline_covariates = list("ns(baseline_MELD,knots=NPresults[[1]][[3]][[1]], Boundary.knots=NPresults[[1]][[3]][[2]])", 
+                             "baseline_MELD_exception", "status1", "gender", "race", "year_of_listing",
+                             "ns(age,knots=NPresults[[1]][[3]][[3]], Boundary.knots=NPresults[[1]][[3]][[4]])", 
+                             "ns(height,knots=NPresults[[1]][[3]][[5]], Boundary.knots=NPresults[[1]][[3]][[6]])", 
+                             "ns(weight,knots=NPresults[[1]][[3]][[7]], Boundary.knots=NPresults[[1]][[3]][[8]])",
+                             "accept_incompatible_blood_type", "accept_extra_corporeal_liver", "accept_liver_segment",
+                             "accept_HBV_positive_donor", "accept_HCV_positive_donor",
+                             "patient_on_life_support", "functional_status", "primary_diagnosis", "spontaneous_bacterial_peritonitis",
+                             "history_of_PV_thrombosis", "history_of_TIPSS"),
+  time_varying_covariates_transplant = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
+                                                MELD_exception*
+                                                ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
+  time_varying_covariates_censoring = list("ns(MELD,knots=NPresults[[1]][[3]][[9]], Boundary.knots=NPresults[[1]][[3]][[10]])*
+                                               MELD_exception*
+                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))",
+                                           "post_transplant*
+                                               ns(days_since_start, knots = c(60,120,360,720,1620), Boundary.knots = c(30,3600))"),
+  increased_risk_usage_factor = 0, #(R+)
+  standard_risk_usage_factor = 1,  #(R+)
+  timescale = "WL", #("WL", "cal", "both")
+  K=3, boot=T,  regime="g_1"
+)
+)
 
 
-mcmapply(FUN=function(x){bootstrap_results[[1]][x,,,"g_1"]<<-x}, x=bootstart:bootend, mc.cores=2)
+
 save(bootstrap_results, file=paste0("/home/sarvet/LimitedC/Boot_Results/Run1/bootresults_test_12202021.RData"))
