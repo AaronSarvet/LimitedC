@@ -1,3 +1,5 @@
+
+
 requiredPackages = c(
   'plyr',
   'tidyverse',
@@ -8,14 +10,11 @@ requiredPackages = c(
   'parallel',
   'haven',
   'Hmisc',
-  'biglmm',
-  'showtext'
+  'biglmm'
 )
-for (p in requiredPackages) {
-  if (!require(p, character.only = TRUE))
-    install.packages(p)
-  library(p, character.only = TRUE)
-}
+
+library(requiredPackages,lib.loc="/LimitedC/Library" )
+
 
 load("candidates_analysis.RData")
 
