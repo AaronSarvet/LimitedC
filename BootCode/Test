@@ -1,5 +1,5 @@
 
-library(c(
+RequiredPackages<-c(
   'plyr',
   'tidyverse',
   'data.table',
@@ -10,8 +10,9 @@ library(c(
   'haven',
   'Hmisc',
   'biglmm'
-), character.only = TRUE)
+)
 
+lapply(RequiredPackages, require, character.only = TRUE)
 
 load("candidates_analysis.RData")
 
