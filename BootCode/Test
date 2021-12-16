@@ -13,7 +13,7 @@ requiredPackages = c(
   'biglmm'
 )
 
-library(requiredPackages )
+library(requiredPackages, character.only = TRUE )
 
 
 load("candidates_analysis.RData")
