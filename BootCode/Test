@@ -14,7 +14,7 @@ RequiredPackages<-c(
 
 lapply(RequiredPackages, require, character.only = TRUE)
 
-load("candidates_analysis.RData")
+load("/home/sarvet/candidates_analysis.RData")
 
 bootstart = 26
 bootend   = 50
@@ -625,4 +625,4 @@ for(i in 1:500){
 #)
 #)
 
-save(bootstrap_results, file=paste0("LimitedC/Boot_Results/Run1/bootresults_test_12202021.RData"))
+save(bootstrap_results, file=paste0("/home/sarvet/LimitedC/Boot_Results/Run1/bootresults_test_12202021.RData"))
