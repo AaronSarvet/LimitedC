@@ -1,4 +1,5 @@
-requiredPackages = c(
+
+RequiredPackages<-c(
   'plyr',
   'tidyverse',
   'data.table',
@@ -8,16 +9,12 @@ requiredPackages = c(
   'parallel',
   'haven',
   'Hmisc',
-  'biglmm',
-  'showtext'
+  'biglmm'
 )
-for (p in requiredPackages) {
-  if (!require(p, character.only = TRUE))
-    install.packages(p)
-  library(p, character.only = TRUE)
-}
 
-load("candidates_analysis.RData")
+lapply(RequiredPackages, require, character.only = TRUE)
+
+load("/home/sarvet/candidates_analysis.RData")
 
 bootstart = 26
 bootend   = 50
@@ -628,4 +625,4 @@ mapply(estimate, seed=bootstart:bootend, MoreArgs = list(
 )
 )
 
-save(bootstrap_results, file=paste0("LimitedC/Boot_Results/Run1/bootresults_", bootstart, "_", bootend, "_12202021.RData"))
+save(bootstrap_results, file=paste0("/home/sarvet/LimitedC/Boot_Results/Run1/bootresults_", bootstart, "_", bootend,"_12202021.RData"))
