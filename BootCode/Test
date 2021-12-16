@@ -17,7 +17,7 @@ lapply(RequiredPackages, require, character.only = TRUE)
 #load("/home/sarvet/candidates_analysis.RData")
 
 bootstart = 1
-bootend   = 2
+bootend   = 1
 
 
 
@@ -599,7 +599,7 @@ for(i in 1:500){
   names(bootstrap_results[[2]][[i]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
 }
 
-mcmapply(estimate, seed=bootstart:bootend, mc.cores=2, MoreArgs = list(
+mapply(estimate, seed=bootstart:bootend, MoreArgs = list(
   data=candidates_analysis,
   baseline_covariates = list("ns(baseline_MELD,knots=NPresults[[1]][[3]][[1]], Boundary.knots=NPresults[[1]][[3]][[2]])", 
                              "baseline_MELD_exception", "status1", "gender", "race", "year_of_listing",
