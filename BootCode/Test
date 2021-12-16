@@ -1,6 +1,5 @@
 
-
-requiredPackages = c(
+library(c(
   'plyr',
   'tidyverse',
   'data.table',
@@ -11,9 +10,7 @@ requiredPackages = c(
   'haven',
   'Hmisc',
   'biglmm'
-)
-
-library(requiredPackages, character.only = TRUE )
+))
 
 
 load("candidates_analysis.RData")
