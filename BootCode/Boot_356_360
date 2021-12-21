@@ -16,7 +16,7 @@ lapply(RequiredPackages, require, character.only = TRUE)
 
 load("/home/sarvet/candidates_analysis.RData")
 
-bootstart = 355:360
+bootstart = 356:360
 
 estimate <- function(data, baseline_covariates,
                      time_varying_covariates_transplant, time_varying_covariates_censoring, 
@@ -582,7 +582,7 @@ adjust_wts <- function(data_with_weights, increased_risk_usage_factor, standard_
   
 }
 
-
+for(i in 1:5){
 bootstrap_results<-vector(2, mode="list")
 names(bootstrap_results)<-c("Estimate Array", "Models")
 bootstrap_results[[1]]<-array(data=NA, dim=c(500, 137, 41, 3), dimnames=list(1:500, 0:136, c(
@@ -598,7 +598,7 @@ for(i in 1:500){
 
 
 
-for(i in 1:5){
+
 
 mapply(estimate, seed=bootstart[i]:bootstart[i], MoreArgs = list(
   data=candidates_analysis,
