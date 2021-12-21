@@ -591,9 +591,9 @@ bootstrap_results[[1]]<-array(data=NA, dim=c(500, 137, 41, 3), dimnames=list(1:5
   "Lambda_Y_r", "Lambda_Y_r_g", "Lambda_Y_r_naive", "Lambda_Y", "Lambda_Y_g", "Lambda_Y_naive", "Inc_Y_HT", "Inc_Y_g_HT","Inc_Y_naive_HT","E_Y_HT", "E_Y_KM", "E_Y_g_HT", "E_Y_g_KM", "E_Y_naive_HT", "E_Y_naive_KM"
 ), c("g_1", "g_2", "g_3")))
 bootstrap_results[[2]]<-vector(500, mode="list")
-for(i in 1:500){
-  bootstrap_results[[2]][[i]]<-vector(5, mode="list")
-  names(bootstrap_results[[2]][[i]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
+for(j in 1:500){
+  bootstrap_results[[2]][[j]]<-vector(5, mode="list")
+  names(bootstrap_results[[2]][[j]])<-c("Censoring (Admin)", "Censoring (LTFU)", "Censoring (transplant)", "Standard Risk", "Increased Risk")
 }
 
 
