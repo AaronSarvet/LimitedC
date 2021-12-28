@@ -15,8 +15,8 @@ lapply(RequiredPackages, require, character.only = TRUE)
 
 load("/home/sarvet/candidates_analysis.RData")
 
-bootstart = 101
-bootend   = 125
+bootstart = 7
+bootend   = 8
 
 
 
@@ -591,7 +591,7 @@ prevs<-c(1.25, 1.5)
 
 Begin<-Sys.time()
 for(i in bootstart:bootend){
-  load(paste0("/Users/sarvet/Dropbox/EPFL Postdoc/Limited Resources/Paper C/Code/Bootstrap results/Run 1/g1/bootresults_",bootin[i],"_",bootout[i],"_12202021.RData"))
+  load(paste0("/home/sarvet/LimitedC/Boot_Results/Run1/bootresults_",bootin[i],"_",bootout[i],"_12202021.RData"))
   for(j in bootin[i]:bootout[i]){
     for(k in 1:2){
       estimate( 
@@ -623,5 +623,5 @@ for(i in bootstart:bootend){
     }
   }
   bootstrap_results[[2]]<-NULL
-  save(bootstrap_results, file=paste0("/Users/sarvet/Dropbox/EPFL Postdoc/Limited Resources/Paper C/Code/Bootstrap results/Run 1/All/bootresults_",bootin[i],"_",bootout[i],"_all_12202021.RData"))
+  save(bootstrap_results, file=paste0("/home/sarvet/LimitedC/Boot_Results/Run1/All/bootresults_",bootin[i],"_",bootout[i],"_all_12202021.RData"))
 }
